@@ -3,13 +3,15 @@
 #include <string>
 #include <vector>
 
+#include <iostream>
+#include <stdlib.h>
+
 #include "caffe/solver.hpp"
 #include "caffe/util/format.hpp"
 #include "caffe/util/hdf5.hpp"
 #include "caffe/util/io.hpp"
 #include "caffe/util/upgrade_proto.hpp"
 
-#include <assert.h>
 #include "mpi.h"
 
 namespace caffe {
@@ -195,13 +197,18 @@ void Solver<Dtype>::Step(int iters) {
   MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
   MPI_Comm_rank(MPI_COMM_WORLD, &myid);
   MPI_Get_processor_name(processor_name, &namelen);
-  //for_reduce_rec for mpi utilization
+
+  LOG_IF(INFO, Caffe::root_solver()) << "Process " << myid << " of "
+      << numprocs << " is on " << processor_name;
+
+  //for_reduce_send & for_reduce_rec for mpi utilization
   int parameter_size = 0;
   for(int i = 0; i < net_->learnable_params().size(); i++) {
     for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
       parameter_size++;
     }
   }
+  double* for_reduce_send = new double[parameter_size];
   double* for_reduce_rec = new double[parameter_size];
 
   while (iter_ < stop_iter) {
@@ -236,7 +243,8 @@ void Solver<Dtype>::Step(int iters) {
       float per_s = (iter_ - iterations_last_) / (lapse ? lapse : 1);
       LOG_IF(INFO, Caffe::root_solver()) << "Iteration " << iter_
           << " (" << per_s << " iter/s, " << lapse << "s/"
-          << param_.display() << " iters), loss = " << smoothed_loss_;
+          << param_.display() << " iters), loss = " << smoothed_loss_
+          << ", on " << processor_name << ", Process " << myid;
       iteration_timer_.Start();
       iterations_last_ = iter_;
       const vector<Blob<Dtype>*>& result = net_->output_blobs();
@@ -253,9 +261,10 @@ void Solver<Dtype>::Step(int iters) {
             loss_msg_stream << " (* " << loss_weight
                             << " = " << loss_weight * result_vec[k] << " loss)";
           }
-          LOG_IF(INFO, Caffe::root_solver()) << "    Train net output #"
+          LOG_IF(INFO, Caffe::root_solver()) << "Train net output #"
               << score_index++ << ": " << output_name << " = "
-              << result_vec[k] << loss_msg_stream.str();
+              << result_vec[k] << loss_msg_stream.str()
+              << ", on " << processor_name << ", Process " << myid;
         }
       }
     }
@@ -264,17 +273,18 @@ void Solver<Dtype>::Step(int iters) {
     }
 
     //copy parameters into for_reduce_send
-    double* for_reduce_send = new double[parameter_size];
     int index = 0;
     for(int i = 0; i < net_->learnable_params().size(); i++) {
       for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
         for_reduce_send[index++] = net_->learnable_params()[i]->cpu_diff()[j];
       }
     }
-    assert(index == parameter_size);
+    if(index != parameter_size) {
+      printf("index = %d, parameter_size = %d\n", index, parameter_size);
+      exit(1);
+    }
     //reduce
     MPI_Allreduce(for_reduce_send, for_reduce_rec, parameter_size, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    delete[] for_reduce_send;
     for(int i = 0; i < parameter_size; i++) {
       for_reduce_rec[i] /= numprocs;
     }
@@ -285,7 +295,10 @@ void Solver<Dtype>::Step(int iters) {
         net_->learnable_params()[i]->mutable_cpu_diff()[j] = for_reduce_rec[index++];
       }
     }
-    assert(index == parameter_size);
+    if(index != parameter_size) {
+      printf("index = %d, parameter_size = %d\n", index, parameter_size);
+      exit(1);
+    }
 
     ApplyUpdate();
 
@@ -308,6 +321,7 @@ void Solver<Dtype>::Step(int iters) {
       break;
     }
   }
+  delete[] for_reduce_send;
   delete[] for_reduce_rec;
   MPI_Finalize();
 }
