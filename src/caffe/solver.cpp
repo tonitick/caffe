@@ -189,6 +189,7 @@ void Solver<Dtype>::Step(int iters) {
   losses_.clear();
   smoothed_loss_ = 0;
   iteration_timer_.Start();
+<<<<<<< HEAD
   
   //get mpi info
   int myid, numprocs;
@@ -210,6 +211,8 @@ void Solver<Dtype>::Step(int iters) {
   }
   double* for_reduce_send = new double[parameter_size];
   double* for_reduce_rec = new double[parameter_size];
+=======
+>>>>>>> 4efdf7ee49cffefdd7ea099c00dc5ea327640f04
 
   while (iter_ < stop_iter) {
     // zero-init the params
@@ -243,8 +246,12 @@ void Solver<Dtype>::Step(int iters) {
       float per_s = (iter_ - iterations_last_) / (lapse ? lapse : 1);
       LOG_IF(INFO, Caffe::root_solver()) << "Iteration " << iter_
           << " (" << per_s << " iter/s, " << lapse << "s/"
+<<<<<<< HEAD
           << param_.display() << " iters), loss = " << smoothed_loss_
           << ", on " << processor_name << ", Process " << myid;
+=======
+          << param_.display() << " iters), loss = " << smoothed_loss_;
+>>>>>>> 4efdf7ee49cffefdd7ea099c00dc5ea327640f04
       iteration_timer_.Start();
       iterations_last_ = iter_;
       const vector<Blob<Dtype>*>& result = net_->output_blobs();
@@ -261,16 +268,23 @@ void Solver<Dtype>::Step(int iters) {
             loss_msg_stream << " (* " << loss_weight
                             << " = " << loss_weight * result_vec[k] << " loss)";
           }
+<<<<<<< HEAD
           LOG_IF(INFO, Caffe::root_solver()) << "Train net output #"
               << score_index++ << ": " << output_name << " = "
               << result_vec[k] << loss_msg_stream.str()
               << ", on " << processor_name << ", Process " << myid;
+=======
+          LOG_IF(INFO, Caffe::root_solver()) << "    Train net output #"
+              << score_index++ << ": " << output_name << " = "
+              << result_vec[k] << loss_msg_stream.str();
+>>>>>>> 4efdf7ee49cffefdd7ea099c00dc5ea327640f04
         }
       }
     }
     for (int i = 0; i < callbacks_.size(); ++i) {
       callbacks_[i]->on_gradients_ready();
     }
+<<<<<<< HEAD
 
     //copy parameters into for_reduce_send
     int index = 0;
@@ -300,6 +314,8 @@ void Solver<Dtype>::Step(int iters) {
       exit(1);
     }
 
+=======
+>>>>>>> 4efdf7ee49cffefdd7ea099c00dc5ea327640f04
     ApplyUpdate();
 
     // Increment the internal iter_ counter -- its value should always indicate
@@ -321,9 +337,12 @@ void Solver<Dtype>::Step(int iters) {
       break;
     }
   }
+<<<<<<< HEAD
   delete[] for_reduce_send;
   delete[] for_reduce_rec;
   MPI_Finalize();
+=======
+>>>>>>> 4efdf7ee49cffefdd7ea099c00dc5ea327640f04
 }
 
 template <typename Dtype>
