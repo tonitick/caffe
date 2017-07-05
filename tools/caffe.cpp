@@ -458,4 +458,6 @@ int main(int argc, char** argv) {
   } else {
     gflags::ShowUsageWithFlagsRestrict(argv[0], "tools/caffe");
   }
+  
+  MPI_Finalize();
 }

@@ -9,6 +9,8 @@
 #include "caffe/layers/data_layer.hpp"
 #include "caffe/util/benchmark.hpp"
 
+#include "mpi.h"
+
 namespace caffe {
 
 template <typename Dtype>
@@ -58,8 +60,9 @@ void DataLayer<Dtype>::DataLayerSetUp(const vector<Blob<Dtype>*>& bottom,
 
 template <typename Dtype>
 bool DataLayer<Dtype>::Skip() {
-  int size = Caffe::solver_count();
-  int rank = Caffe::solver_rank();
+  int size, rank; 
+  MPI_Comm_size(MPI_COMM_WORLD, &size);
+  MPI_Comm_rank(MPI_COMM_WORLD, &rank); 
   bool keep = (offset_ % size) == rank ||
               // In test mode, only rank 0 runs, so avoid skipping
               this->layer_param_.phase() == TEST;

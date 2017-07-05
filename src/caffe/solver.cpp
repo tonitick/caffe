@@ -201,13 +201,42 @@ void Solver<Dtype>::Step(int iters) {
   LOG_IF(INFO, Caffe::root_solver()) << "Process " << myid << " of "
       << numprocs << " is on " << processor_name;
 
-  //for_reduce_send & for_reduce_rec for mpi utilization
+  //get parameter size
   int parameter_size = 0;
   for(int i = 0; i < net_->learnable_params().size(); i++) {
     for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
       parameter_size++;
     }
   }
+
+  //firstly sync params 
+  double* self_data = new double[parameter_size];
+  double* sync_data = new double[parameter_size];
+  int index = 0;
+  for(int i = 0; i < net_->learnable_params().size(); i++) {
+    for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+      self_data[index++] = net_->learnable_params()[i]->cpu_data()[j];
+    }
+  }
+  //reduce
+  MPI_Allreduce(self_data, sync_data, parameter_size, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  for(int i = 0; i < parameter_size; i++) {
+    sync_data[i] /= numprocs;
+  }
+  //copy back to net
+  index = 0;
+  for(int i = 0; i < net_->learnable_params().size(); i++) {
+    for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+      net_->learnable_params()[i]->mutable_cpu_data()[j] = sync_data[index++];
+    }
+  }
+  // for(int i = 0; i < 10; i++) {
+  //   printf("myid: %d, i = %d, data = %lf\n", myid, i, sync_data[i]);
+  // }
+  delete[] self_data;
+  delete[] sync_data;
+
+  //for_reduce_send & for_reduce_rec for mpi utilization
   double* for_reduce_send = new double[parameter_size];
   double* for_reduce_rec = new double[parameter_size];
 
@@ -289,7 +318,7 @@ void Solver<Dtype>::Step(int iters) {
     for(int i = 0; i < parameter_size; i++) {
       for_reduce_rec[i] /= numprocs;
     }
-    //copy back
+    //copy back to net
     index = 0;
     for(int i = 0; i < net_->learnable_params().size(); i++) {
       for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
@@ -321,10 +350,21 @@ void Solver<Dtype>::Step(int iters) {
       // Break out of training loop.
       break;
     }
+
+    // double* self_data = new double[parameter_size];
+    // index = 0;
+    // for(int i = 0; i < net_->learnable_params().size(); i++) {
+    //   for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+    //     self_data[index++] = net_->learnable_params()[i]->cpu_data()[j];
+    //   }
+    // }
+    // for(int i = 0; i < 10; i++) {
+    //   printf("myid: %d, i = %d, data = %lf\n", myid, i, self_data[i]);
+    // }
+    // delete[] self_data;
   }
   delete[] for_reduce_send;
   delete[] for_reduce_rec;
-  MPI_Finalize();
 }
 
 template <typename Dtype>
