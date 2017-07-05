@@ -429,10 +429,7 @@ int time() {
 RegisterBrewFunction(time);
 
 int main(int argc, char** argv) {
-<<<<<<< HEAD
   MPI_Init(&argc, &argv);
-=======
->>>>>>> 4efdf7ee49cffefdd7ea099c00dc5ea327640f04
   // Print output to stderr (while still logging).
   FLAGS_alsologtostderr = 1;
   // Set version
