@@ -12,6 +12,8 @@
 #include "caffe/util/io.hpp"
 #include "caffe/util/upgrade_proto.hpp"
 
+#include "caffe/ps/paramserv.hpp"
+
 #include "mpi.h"
 
 namespace caffe {
@@ -230,107 +232,120 @@ void Solver<Dtype>::Step(int iters) {
       net_->learnable_params()[i]->mutable_cpu_data()[j] = sync_data[index++];
     }
   }
-  // for(int i = 0; i < 10; i++) {
-  //   printf("myid: %d, i = %d, data = %lf\n", myid, i, sync_data[i]);
-  // }
   delete[] self_data;
   delete[] sync_data;
 
-  //for_reduce_send & for_reduce_rec for mpi utilization
-  double* for_reduce_send = new double[parameter_size];
-  double* for_reduce_rec = new double[parameter_size];
-
+  //main loop: iteration
   while (iter_ < stop_iter) {
-    // zero-init the params
-    net_->ClearParamDiffs();
-    if (param_.test_interval() && iter_ % param_.test_interval() == 0
-        && (iter_ > 0 || param_.test_initialization())) {
-      if (Caffe::root_solver()) {
-        TestAll();
+    if(myid == 0) { //server
+      ps::Server server(numprocs - 1, parameter_size);
+  
+      //collect diff from wokers
+      server.collectParam();
+      index = 0;
+      for(int i = 0; i < net_->learnable_params().size(); i++) { //copy diff to net
+        for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+          net_->learnable_params()[i]->mutable_cpu_diff()[j] = server.getDiff(index);
+          index++;
+        }
       }
-      if (requested_early_exit_) {
-        // Break out of the while loop because stop was requested while testing.
-        break;
+      //update
+      ApplyUpdate();
+      //copy data to server
+      index = 0;
+      for(int i = 0; i < net_->learnable_params().size(); i++) { //copy data to net
+        for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+          server.setData(index, net_->learnable_params()[i]->cpu_data()[j]);
+          index++;
+        }
       }
+      //broadcast
+      server.broadcast();
     }
+    else { //worker
+      ps::Worker worker(parameter_size);
+      // zero-init the params
+      net_->ClearParamDiffs();
+      if (param_.test_interval() && iter_ % param_.test_interval() == 0
+          && (iter_ > 0 || param_.test_initialization())) {
+        if (Caffe::root_solver()) {
+          TestAll();
+        }
+        if (requested_early_exit_) {
+          // Break out of the while loop because stop was requested while testing.
+          break;
+        }
+      }
 
-    for (int i = 0; i < callbacks_.size(); ++i) {
-      callbacks_[i]->on_start();
-    }
-    const bool display = param_.display() && iter_ % param_.display() == 0;
-    net_->set_debug_info(display && param_.debug_info());
-    // accumulate the loss and gradient
-    Dtype loss = 0;
-    for (int i = 0; i < param_.iter_size(); ++i) {
-      loss += net_->ForwardBackward();
-    }
-    loss /= param_.iter_size();
-    // average the loss across iterations for smoothed reporting
-    UpdateSmoothedLoss(loss, start_iter, average_loss);
-    if (display) {
-      float lapse = iteration_timer_.Seconds();
-      float per_s = (iter_ - iterations_last_) / (lapse ? lapse : 1);
-      LOG_IF(INFO, Caffe::root_solver()) << "Iteration " << iter_
-          << " (" << per_s << " iter/s, " << lapse << "s/"
-          << param_.display() << " iters), loss = " << smoothed_loss_
-          << ", on " << processor_name << ", Process " << myid;
+      for (int i = 0; i < callbacks_.size(); ++i) {
+        callbacks_[i]->on_start();
+      }
+      const bool display = param_.display() && iter_ % param_.display() == 0;
+      net_->set_debug_info(display && param_.debug_info());
+      // accumulate the loss and gradient
+      Dtype loss = 0;
+      for (int i = 0; i < param_.iter_size(); ++i) {
+        loss += net_->ForwardBackward();
+      }
+      loss /= param_.iter_size();
+      // average the loss across iterations for smoothed reporting
+      UpdateSmoothedLoss(loss, start_iter, average_loss);
+      if (display) {
+        float lapse = iteration_timer_.Seconds();
+        float per_s = (iter_ - iterations_last_) / (lapse ? lapse : 1);
+        LOG_IF(INFO, Caffe::root_solver()) << "Iteration " << iter_
+            << " (" << per_s << " iter/s, " << lapse << "s/"
+            << param_.display() << " iters), loss = " << smoothed_loss_
+            << ", on " << processor_name << ", Process " << myid;
 
-      iteration_timer_.Start();
-      iterations_last_ = iter_;
-      const vector<Blob<Dtype>*>& result = net_->output_blobs();
-      int score_index = 0;
-      for (int j = 0; j < result.size(); ++j) {
-        const Dtype* result_vec = result[j]->cpu_data();
-        const string& output_name =
-            net_->blob_names()[net_->output_blob_indices()[j]];
-        const Dtype loss_weight =
-            net_->blob_loss_weights()[net_->output_blob_indices()[j]];
-        for (int k = 0; k < result[j]->count(); ++k) {
-          ostringstream loss_msg_stream;
-          if (loss_weight) {
-            loss_msg_stream << " (* " << loss_weight
-                            << " = " << loss_weight * result_vec[k] << " loss)";
+        iteration_timer_.Start();
+        iterations_last_ = iter_;
+        const vector<Blob<Dtype>*>& result = net_->output_blobs();
+        int score_index = 0;
+        for (int j = 0; j < result.size(); ++j) {
+          const Dtype* result_vec = result[j]->cpu_data();
+          const string& output_name =
+              net_->blob_names()[net_->output_blob_indices()[j]];
+          const Dtype loss_weight =
+              net_->blob_loss_weights()[net_->output_blob_indices()[j]];
+          for (int k = 0; k < result[j]->count(); ++k) {
+            ostringstream loss_msg_stream;
+            if (loss_weight) {
+              loss_msg_stream << " (* " << loss_weight
+                              << " = " << loss_weight * result_vec[k] << " loss)";
+            }
+            LOG_IF(INFO, Caffe::root_solver()) << "    Train net output #"
+                << score_index++ << ": " << output_name << " = "
+                << result_vec[k] << loss_msg_stream.str()
+                << ", on " << processor_name << ", Process " << myid;
           }
-          LOG_IF(INFO, Caffe::root_solver()) << "    Train net output #"
-              << score_index++ << ": " << output_name << " = "
-              << result_vec[k] << loss_msg_stream.str()
-              << ", on " << processor_name << ", Process " << myid;
+        }
+      }
+      for (int i = 0; i < callbacks_.size(); ++i) {
+        callbacks_[i]->on_gradients_ready();
+      }
+
+      //copy diff to worker
+      index = 0;
+      for(int i = 0; i < net_->learnable_params().size(); i++) {
+        for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+          worker.setDiff(index, net_->learnable_params()[i]->cpu_diff()[j]);
+          index++;
+        }
+      }
+      //push diff to worker
+      worker.push();
+      //pull data from server
+      worker.pull();
+      //copy data to net
+      index = 0;
+      for(int i = 0; i < net_->learnable_params().size(); i++) {
+        for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+          net_->learnable_params()[i]->mutable_cpu_data()[j] = worker.getData(index);
+          index++;
         }
       }
     }
-    for (int i = 0; i < callbacks_.size(); ++i) {
-      callbacks_[i]->on_gradients_ready();
-    }
-
-    //copy parameters into for_reduce_send
-    int index = 0;
-    for(int i = 0; i < net_->learnable_params().size(); i++) {
-      for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
-        for_reduce_send[index++] = net_->learnable_params()[i]->cpu_diff()[j];
-      }
-    }
-    if(index != parameter_size) {
-      printf("index = %d, parameter_size = %d\n", index, parameter_size);
-      exit(1);
-    }
-    //reduce
-    MPI_Allreduce(for_reduce_send, for_reduce_rec, parameter_size, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-    for(int i = 0; i < parameter_size; i++) {
-      for_reduce_rec[i] /= numprocs;
-    }
-    //copy back to net
-    index = 0;
-    for(int i = 0; i < net_->learnable_params().size(); i++) {
-      for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
-        net_->learnable_params()[i]->mutable_cpu_diff()[j] = for_reduce_rec[index++];
-      }
-    }
-    if(index != parameter_size) {
-      printf("index = %d, parameter_size = %d\n", index, parameter_size);
-      exit(1);
-    }
-
-    ApplyUpdate();
 
     // Increment the internal iter_ counter -- its value should always indicate
     // the number of times the weights have been updated.
@@ -350,21 +365,7 @@ void Solver<Dtype>::Step(int iters) {
       // Break out of training loop.
       break;
     }
-
-    // double* self_data = new double[parameter_size];
-    // index = 0;
-    // for(int i = 0; i < net_->learnable_params().size(); i++) {
-    //   for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
-    //     self_data[index++] = net_->learnable_params()[i]->cpu_data()[j];
-    //   }
-    // }
-    // for(int i = 0; i < 10; i++) {
-    //   printf("myid: %d, i = %d, data = %lf\n", myid, i, self_data[i]);
-    // }
-    // delete[] self_data;
   }
-  delete[] for_reduce_send;
-  delete[] for_reduce_rec;
 }
 
 template <typename Dtype>
