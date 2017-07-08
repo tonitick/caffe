@@ -94,6 +94,11 @@ class Solver {
    */
   virtual inline const char* type() const { return ""; }
 
+  void copyDataToNet(double* data);
+  void copyDiffToNet(double* diff);
+  void copyDataFromNet(double* data);
+  void copyDiffFromNet(double* diff);
+
  protected:
   // Make and apply the update value for the current iteration.
   virtual void ApplyUpdate() = 0;

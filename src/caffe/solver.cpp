@@ -16,6 +16,8 @@
 
 #include "mpi.h"
 
+#include <stdio.h>
+
 namespace caffe {
 
 template<typename Dtype>
@@ -185,13 +187,6 @@ void Solver<Dtype>::InitTestNets() {
 
 template <typename Dtype>
 void Solver<Dtype>::Step(int iters) {
-  const int start_iter = iter_;
-  const int stop_iter = iter_ + iters;
-  int average_loss = this->param_.average_loss();
-  losses_.clear();
-  smoothed_loss_ = 0;
-  iteration_timer_.Start();
-  
   //get mpi info
   int myid, numprocs;
   int namelen;
@@ -199,9 +194,17 @@ void Solver<Dtype>::Step(int iters) {
   MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
   MPI_Comm_rank(MPI_COMM_WORLD, &myid);
   MPI_Get_processor_name(processor_name, &namelen);
-
   LOG_IF(INFO, Caffe::root_solver()) << "Process " << myid << " of "
       << numprocs << " is on " << processor_name;
+
+  // printf("initial iterations_last_ = %f\n\n\n", iterations_last_);
+  
+  const int start_iter = iter_;
+  const int stop_iter = iter_ + iters;
+  int average_loss = this->param_.average_loss();
+  losses_.clear();
+  smoothed_loss_ = 0;
+  iteration_timer_.Start();
 
   //get parameter size
   int parameter_size = 0;
@@ -214,24 +217,13 @@ void Solver<Dtype>::Step(int iters) {
   //firstly sync params 
   double* self_data = new double[parameter_size];
   double* sync_data = new double[parameter_size];
-  int index = 0;
-  for(int i = 0; i < net_->learnable_params().size(); i++) {
-    for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
-      self_data[index++] = net_->learnable_params()[i]->cpu_data()[j];
-    }
-  }
+  copyDataFromNet(self_data);
   //reduce
   MPI_Allreduce(self_data, sync_data, parameter_size, MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
   for(int i = 0; i < parameter_size; i++) {
     sync_data[i] /= numprocs;
   }
-  //copy back to net
-  index = 0;
-  for(int i = 0; i < net_->learnable_params().size(); i++) {
-    for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
-      net_->learnable_params()[i]->mutable_cpu_data()[j] = sync_data[index++];
-    }
-  }
+  copyDataToNet(sync_data);
   delete[] self_data;
   delete[] sync_data;
 
@@ -242,7 +234,7 @@ void Solver<Dtype>::Step(int iters) {
   
       //collect diff from wokers
       server.collectParam();
-      index = 0;
+      int index = 0;
       for(int i = 0; i < net_->learnable_params().size(); i++) { //copy diff to net
         for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
           net_->learnable_params()[i]->mutable_cpu_diff()[j] = server.getDiff(index);
@@ -292,6 +284,7 @@ void Solver<Dtype>::Step(int iters) {
       UpdateSmoothedLoss(loss, start_iter, average_loss);
       if (display) {
         float lapse = iteration_timer_.Seconds();
+        // printf("iterations_last_ = %f\n\n\n", iterations_last_);
         float per_s = (iter_ - iterations_last_) / (lapse ? lapse : 1);
         LOG_IF(INFO, Caffe::root_solver()) << "Iteration " << iter_
             << " (" << per_s << " iter/s, " << lapse << "s/"
@@ -326,7 +319,7 @@ void Solver<Dtype>::Step(int iters) {
       }
 
       //copy diff to worker
-      index = 0;
+      int index = 0;
       for(int i = 0; i < net_->learnable_params().size(); i++) {
         for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
           worker.setDiff(index, net_->learnable_params()[i]->cpu_diff()[j]);
@@ -415,6 +408,8 @@ void Solver<Dtype>::Solve(const char* resume_file) {
     TestAll();
   }
   LOG(INFO) << "Optimization Done.";
+
+  MPI_Finalize();
 }
 
 template <typename Dtype>
@@ -583,6 +578,46 @@ void Solver<Dtype>::UpdateSmoothedLoss(Dtype loss, int start_iter,
     int idx = (iter_ - start_iter) % average_loss;
     smoothed_loss_ += (loss - losses_[idx]) / average_loss;
     losses_[idx] = loss;
+  }
+}
+
+template<typename Dtype>
+void Solver<Dtype>::copyDataToNet(double* data) {
+  int index = 0;
+  for(int i = 0; i < net_->learnable_params().size(); i++) {
+    for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+      net_->learnable_params()[i]->mutable_cpu_data()[j] = data[index++];
+    }
+  }
+}
+
+template<typename Dtype>
+void Solver<Dtype>::copyDiffToNet(double* diff) {
+  int index = 0;
+  for(int i = 0; i < net_->learnable_params().size(); i++) {
+    for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+      net_->learnable_params()[i]->mutable_cpu_diff()[j] = diff[index++];
+    }
+  }
+}
+
+template<typename Dtype>
+void Solver<Dtype>::copyDataFromNet(double* data) {
+  int index = 0;
+  for(int i = 0; i < net_->learnable_params().size(); i++) {
+    for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+      data[index++] = net_->learnable_params()[i]->cpu_data()[j];
+    }
+  }
+}
+
+template<typename Dtype>
+void Solver<Dtype>::copyDiffFromNet(double* diff) {
+  int index = 0;
+  for(int i = 0; i < net_->learnable_params().size(); i++) {
+    for(int j = 0; j < net_->learnable_params()[i]->count(); j++) {
+      diff[index++] = net_->learnable_params()[i]->cpu_diff()[j];
+    }
   }
 }
 
