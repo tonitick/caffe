@@ -3,9 +3,6 @@
 #include <string>
 #include <vector>
 
-#include <iostream>
-#include <stdlib.h>
-
 #include <boost/thread/thread.hpp>
 #include <boost/bind.hpp>
 
@@ -14,8 +11,6 @@
 #include "caffe/util/hdf5.hpp"
 #include "caffe/util/io.hpp"
 #include "caffe/util/upgrade_proto.hpp"
-
-#include "caffe/ps/paramserv.hpp"
 
 #include <stdio.h>
 
@@ -188,10 +183,6 @@ void Solver<Dtype>::InitTestNets() {
 
 template <typename Dtype>
 void Solver<Dtype>::Step(int iters) {
-  initMpiInfo();
-  // printf("initial iterations_last_ = %f\n\n\n", iterations_last_);
-  iterations_last_ = 0.0;
-
   const int start_iter = iter_;
   const int stop_iter = iter_ + iters;
   int average_loss = this->param_.average_loss();
@@ -199,19 +190,21 @@ void Solver<Dtype>::Step(int iters) {
   smoothed_loss_ = 0;
   iteration_timer_.Start();
 
-  //firstly sync params 
-  double* self_data = new double[parameter_size];
-  double* sync_data = new double[parameter_size];
-  copyDataFromNet(self_data);
-  //reduce
-  MPI_Allreduce(self_data, sync_data, parameter_size, 
-      MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
-  for(int i = 0; i < parameter_size; i++) {
-    sync_data[i] /= numprocs;
-  }
-  copyDataToNet(sync_data);
-  delete[] self_data;
-  delete[] sync_data;
+  initMpiInfo();
+  MPI_Barrier(MPI_COMM_WORLD);
+  // //firstly sync params 
+  // double* self_data = new double[parameter_size];
+  // double* sync_data = new double[parameter_size];
+  // copyDataFromNet(self_data);
+  // //reduce
+  // MPI_Allreduce(self_data, sync_data, parameter_size, 
+  //     MPI_DOUBLE, MPI_SUM, MPI_COMM_WORLD);
+  // for(int i = 0; i < parameter_size; i++) {
+  //   sync_data[i] /= numprocs;
+  // }
+  // copyDataToNet(sync_data);
+  // delete[] self_data;
+  // delete[] sync_data;
 
   if(myid == 0) { //server
     runServer((numprocs - 1) * iters);
@@ -221,6 +214,9 @@ void Solver<Dtype>::Step(int iters) {
     while (iter_ < stop_iter) {
       // zero-init the params
       net_->ClearParamDiffs();
+
+      pull();
+
       if (param_.test_interval() && iter_ % param_.test_interval() == 0
           && (iter_ > 0 || param_.test_initialization())) {
         if (Caffe::root_solver()) {
@@ -247,7 +243,6 @@ void Solver<Dtype>::Step(int iters) {
       UpdateSmoothedLoss(loss, start_iter, average_loss);
       if (display) {
         float lapse = iteration_timer_.Seconds();
-        // printf("iterations_last_ = %f\n\n\n", iterations_last_);
         float per_s = (iter_ - iterations_last_) / (lapse ? lapse : 1);
         LOG_IF(INFO, Caffe::root_solver()) << "Iteration " << iter_
             << " (" << per_s << " iter/s, " << lapse << "s/"
@@ -282,7 +277,6 @@ void Solver<Dtype>::Step(int iters) {
       }
 
       push();
-      pull();
 
       // Increment the internal iter_ counter -- its value should always indicate
       // the number of times the weights have been updated.
@@ -304,6 +298,8 @@ void Solver<Dtype>::Step(int iters) {
       }
     }
   }
+  MPI_Barrier(MPI_COMM_WORLD);
+  deleteMpiInfo();
 }
 
 template <typename Dtype>
@@ -532,8 +528,8 @@ void Solver<Dtype>::initMpiInfo() {
   MPI_Comm_size(MPI_COMM_WORLD, &numprocs);
   MPI_Comm_rank(MPI_COMM_WORLD, &myid);
   MPI_Get_processor_name(processor_name, &namelen);
-  LOG_IF(INFO, Caffe::root_solver()) << "Process " << myid << " of "
-      << numprocs << " is on " << processor_name;
+  printf("[MPI INFO] Process %d of %d is on %s\n", myid, numprocs, processor_name);
+
 
   //get parameter size
   parameter_size = 0;
@@ -546,9 +542,18 @@ void Solver<Dtype>::initMpiInfo() {
   diffBuff = new double[parameter_size];
   copyDataFromNet(dataBuff);
   copyDiffFromNet(diffBuff);
-  printf("-------------------------parameter_size = %d\n\n\n", parameter_size);
-  printf("-------------------------numprocs = %d\n\n\n", numprocs);
 }
+
+template <typename Dtype>
+void Solver<Dtype>::deleteMpiInfo() {
+  if(dataBuff != NULL) {
+    delete[] dataBuff;
+  }
+  if(diffBuff != NULL) {
+    delete[] diffBuff;
+  }
+}
+
 
 template<typename Dtype>
 void Solver<Dtype>::copyDataToNet(double* data) {
@@ -596,42 +601,33 @@ void Solver<Dtype>::getPullRequest(int count) {
   for(int i = 0; i < count; i++) {
     MPI_Recv(&woker_id, 1, MPI_INT, MPI_ANY_SOURCE, 0, 
         MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    printf("--------------------------receive request from worker %d\n\n\n", woker_id);
     mtx.lock();
-    printf("------------------------lock data.\n\n\n");
     MPI_Send(dataBuff, parameter_size, MPI_DOUBLE, woker_id, woker_id, MPI_COMM_WORLD);
     mtx.unlock();
-    printf("------------------------unlock data.\n\n\n");
-    // printf("send data to woker %d\n", woker_id);
   }
 }
 
 template<typename Dtype>
 void Solver<Dtype>::getDiffAndUpdate(int count) {
-  // printf("-------------------------count = %d\n\n\n", count);
   for(int i = 0; i < count; i++) {
     MPI_Recv(diffBuff, parameter_size, MPI_DOUBLE, MPI_ANY_SOURCE, 
         numprocs, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-    printf("--------------------------receive diff from a worker.\n\n\n");
     mtx.lock();
-    printf("--------------------------lock diff.\n\n\n");
     copyDiffToNet(diffBuff);
     ApplyUpdate();
     copyDataFromNet(dataBuff);
     mtx.unlock();
-    printf("--------------------------unlock diff.\n\n\n");
   }
 }
 
 template<typename Dtype>
 void Solver<Dtype>::runServer(int count) {
+  iter_ = 1; //stay unchanged, do not print info on server
+
   boost::thread getPullRequestThread(
       boost::bind(&Solver<Dtype>::getPullRequest, this, _1), count);
-  boost::thread getDiffAndUpdateThread(
-      boost::bind(&Solver<Dtype>::getDiffAndUpdate, this, _1), count);
   getDiffAndUpdate(count);
   getPullRequestThread.join();
-  getDiffAndUpdateThread.join();
 }
 
 template<typename Dtype>
@@ -640,21 +636,15 @@ void Solver<Dtype>::pull() {
   MPI_Send(&woker_id, 1, MPI_INT, 0, 0, MPI_COMM_WORLD);
   MPI_Recv(dataBuff, parameter_size, MPI_DOUBLE, 0, 
       woker_id, MPI_COMM_WORLD, MPI_STATUS_IGNORE);
-  // printf("woker %d pull data.\n", woker_id);
   copyDataToNet(dataBuff);
 }
 
 template<typename Dtype>
 void Solver<Dtype>::push() {
-  double* diff = new double[parameter_size];
-  copyDiffFromNet(diff);
-  MPI_Send(diff, parameter_size, MPI_DOUBLE, 0, numprocs, MPI_COMM_WORLD);
-  // printf("send diff from worker %d\n\n", myid);
-  delete[] diff;
+  copyDiffFromNet(diffBuff);
+  MPI_Send(diffBuff, parameter_size, MPI_DOUBLE, 0, numprocs, MPI_COMM_WORLD);
 }
 
 INSTANTIATE_CLASS(Solver);
 
 }  // namespace caffe
-
-

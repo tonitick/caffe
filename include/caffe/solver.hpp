@@ -97,26 +97,7 @@ class Solver {
    */
   virtual inline const char* type() const { return ""; }
 
-  void initMpiInfo();
-  void copyDataToNet(double* data);
-  void copyDiffToNet(double* diff);
-  void copyDataFromNet(double* data);
-  void copyDiffFromNet(double* diff);
-  void getPullRequest(int count);
-  void pull();
-  void runServer(int count);
-  void getDiffAndUpdate(int count);
-  void push();
-
  protected:
-  boost::mutex mtx;
-  int myid;
-  int numprocs;
-  int parameter_size;
-  double* dataBuff;
-  double* diffBuff;
-  int namelen;
-  char processor_name[MPI_MAX_PROCESSOR_NAME];
   // Make and apply the update value for the current iteration.
   virtual void ApplyUpdate() = 0;
   string SnapshotFilename(const string extension);
@@ -152,6 +133,29 @@ class Solver {
   float iterations_last_;
 
   DISABLE_COPY_AND_ASSIGN(Solver);
+
+  //for mpi usage, set private
+ private:
+  void initMpiInfo();
+  void deleteMpiInfo();
+  void copyDataToNet(double* data);
+  void copyDiffToNet(double* diff);
+  void copyDataFromNet(double* data);
+  void copyDiffFromNet(double* diff);
+  void getPullRequest(int count);
+  void pull();
+  void runServer(int count);
+  void getDiffAndUpdate(int count);
+  void push();
+
+  boost::mutex mtx;
+  int myid;
+  int numprocs;
+  int parameter_size;
+  double* dataBuff;
+  double* diffBuff;
+  int namelen;
+  char processor_name[MPI_MAX_PROCESSOR_NAME];
 };
 
 }  // namespace caffe
