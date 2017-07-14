@@ -446,6 +446,9 @@ ifneq ($(MATLAB_DIR),)
 	EVERYTHING_TARGETS += mat$(PROJECT)
 endif
 
+#boost thread
+CXXFLAGS += -lboost_system -lboost_thread
+
 ##############################
 # Define build targets
 ##############################

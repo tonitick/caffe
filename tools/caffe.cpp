@@ -429,7 +429,14 @@ int time() {
 RegisterBrewFunction(time);
 
 int main(int argc, char** argv) {
-  MPI_Init(&argc, &argv);
+  //init mpi with multi-thread support
+  int provided;
+  MPI_Init_thread(&argc, &argv, MPI_THREAD_MULTIPLE, &provided);
+  if(provided != MPI_THREAD_MULTIPLE) {
+    printf("MPI do not Support Multiple thread\n");
+    exit(0);
+  }
+
   // Print output to stderr (while still logging).
   FLAGS_alsologtostderr = 1;
   // Set version
